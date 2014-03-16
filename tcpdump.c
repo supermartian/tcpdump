@@ -109,8 +109,8 @@ int Qflag = -1;				/* restrict captured packet by send/receive direction */
 #endif
 static char *zflag = NULL;		/* compress each savefile using a specified command (like gzip or bzip2) */
 
-static int infodelay;
-static int infoprint;
+static volatile int infodelay;
+static volatile int infoprint;
 
 char *program_name;
 
@@ -152,7 +152,8 @@ RETSIGTYPE requestinfo(int);
 #endif
 
 static void info(int);
-static u_int packets_captured;
+static volatile u_int packets_captured;
+static volatile u_int packets_filtered;
 
 struct printer {
         if_printer f;
@@ -1731,7 +1732,7 @@ info(register int verbose)
 	stat.ps_ifdrop = 0;
 	if (pcap_stats(pd, &stat) < 0) {
 		(void)fprintf(stderr, "pcap_stats: %s\n", pcap_geterr(pd));
-		infoprint = 0;
+		__atomic_clear(&infoprint, __ATOMIC_SEQ_CST);
 		return;
 	}
 
@@ -1761,7 +1762,7 @@ info(register int verbose)
 		    stat.ps_ifdrop, PLURAL_SUFFIX(stat.ps_ifdrop));
 	} else
 		putc('\n', stderr);
-	infoprint = 0;
+	__atomic_clear(&infoprint, __ATOMIC_SEQ_CST);
 }
 
 #if defined(HAVE_FORK) || defined(HAVE_VFORK)
@@ -1808,9 +1809,9 @@ dump_packet_and_trunc(u_char *user, const struct pcap_pkthdr *h, const u_char *s
 {
 	struct dump_info *dump_info;
 
-	++packets_captured;
+	__sync_fetch_and_add(&packets_captured, 1);
 
-	++infodelay;
+	__sync_fetch_and_add(&infodelay, 1);
 
 	dump_info = (struct dump_info *)user;
 
@@ -1937,7 +1938,8 @@ dump_packet_and_trunc(u_char *user, const struct pcap_pkthdr *h, const u_char *s
 		pcap_dump_flush(dump_info->p);
 #endif
 
-	--infodelay;
+	__sync_fetch_and_sub(&infodelay, 1);
+
 	if (infoprint)
 		info(0);
 }
@@ -1945,9 +1947,9 @@ dump_packet_and_trunc(u_char *user, const struct pcap_pkthdr *h, const u_char *s
 static void
 dump_packet(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
 {
-	++packets_captured;
+	__sync_fetch_and_add(&packets_captured, 1);
 
-	++infodelay;
+	__sync_fetch_and_add(&infodelay, 1);
 
 	pcap_dump(user, h, sp);
 #ifdef HAVE_PCAP_DUMP_FLUSH
@@ -1955,7 +1957,7 @@ dump_packet(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
 		pcap_dump_flush((pcap_dumper_t *)user);
 #endif
 
-	--infodelay;
+	__sync_fetch_and_sub(&infodelay, 1);
 	if (infoprint)
 		info(0);
 }
@@ -1967,9 +1969,9 @@ print_packet(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
 	u_int hdrlen;
         netdissect_options *ndo;
 
-	++packets_captured;
+	__sync_fetch_and_add(&packets_captured, 1);
 
-	++infodelay;
+	__sync_fetch_and_add(&infodelay, 1);
 	ts_print(&h->ts);
 
 	print_info = (struct print_info *)user;
@@ -2048,7 +2050,7 @@ print_packet(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
 
 	putchar('\n');
 
-	--infodelay;
+	__sync_fetch_and_sub(&infodelay, 1);
 	if (infoprint)
 		info(0);
 }
@@ -2099,7 +2101,7 @@ default_print(const u_char *bp, u_int length)
 RETSIGTYPE requestinfo(int signo _U_)
 {
 	if (infodelay)
-		++infoprint;
+		__sync_fetch_and_add(&infoprint, 1);
 	else
 		info(0);
 }
