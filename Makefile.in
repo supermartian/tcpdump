@@ -51,7 +51,7 @@ CFLAGS = @CFLAGS@
 FULL_CFLAGS = $(CCOPT) $(DEFS) $(INCLS) $(CFLAGS)
 
 # Standard LDFLAGS
-LDFLAGS = @LDFLAGS@
+LDFLAGS = @LDFLAGS@ -lpthread
 
 # Standard LIBS
 LIBS = @LIBS@
@@ -206,6 +206,7 @@ LIBNETDISSECT_SRC=\
 	print-zephyr.c \
 	print-zeromq.c \
 	signature.c \
+	pkt_queue.c \
 	util.c
 
 LOCALSRC = @LOCALSRC@
@@ -268,6 +269,7 @@ HDR = \
 	smb.h \
 	tcp.h \
 	tcpdump-stdinc.h \
+	pkt_queue.h \
 	udp.h
 
 TAGHDR = \

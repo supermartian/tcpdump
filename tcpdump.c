@@ -84,6 +84,7 @@ extern int SIZE_BUF;
 #include "setsignal.h"
 #include "gmt2local.h"
 #include "pcap-missing.h"
+#include "pkt_queue.h"
 
 #ifndef PATH_MAX
 #define PATH_MAX 1024
@@ -94,6 +95,10 @@ extern int SIZE_BUF;
 #elif SIGUSR1
 #define SIGNAL_REQ_INFO SIGUSR1
 #endif
+
+#define PROCESS_DUMP_TRUNC	0
+#define PROCESS_DUMP		1
+#define PROCESS_PRINT		2
 
 netdissect_options Gndo;
 netdissect_options *gndo = &Gndo;
@@ -122,6 +127,7 @@ static RETSIGTYPE child_cleanup(int);
 static void usage(void) __attribute__((noreturn));
 static void show_dlts_and_exit(const char *device, pcap_t *pd) __attribute__((noreturn));
 
+static void packet_process_thread_start(int type, int *status);
 static void print_packet(u_char *, const struct pcap_pkthdr *, const u_char *);
 static void ndo_default_print(netdissect_options *, const u_char *, u_int);
 static void dump_packet_and_trunc(u_char *, const struct pcap_pkthdr *, const u_char *);
@@ -154,6 +160,14 @@ RETSIGTYPE requestinfo(int);
 static void info(int);
 static volatile u_int packets_captured;
 static volatile u_int packets_filtered;
+
+struct queue_root *queue;
+struct pkt_callback_parameter {
+	u_char *user;
+	struct pcap_pkthdr *pkt;
+	u_char *sp;
+};
+pcap_handler pkt_handler;
 
 struct printer {
         if_printer f;
@@ -726,6 +740,55 @@ get_next_file(FILE *VFile, char *ptr)
 	return ret;
 }
 
+static void *enqueue_pkt(u_char *user, const struct pcap_pkthdr *h, const u_char *sp)
+{
+	struct pkt_callback_parameter *p = (struct pkt_callback_parameter *)
+		malloc(sizeof(struct pkt_callback_parameter));
+	p->user = user;
+	p->pkt = h;
+	p->sp = sp;
+	queue_add(queue, p);
+}
+
+static void *packet_process_thread(void *para)
+{
+	while (1) {
+		struct pkt_callback_parameter *p = queue_get(queue);
+		if (p != NULL) {
+			pkt_handler(p->user, p->pkt, p->sp);
+			free(p);
+		} else {
+			usleep(1);
+		}
+	}
+
+	return NULL;
+}
+
+static void packet_process_thread_start(int type, int *status)
+{
+	pthread_attr_t attr;
+	pthread_t pkt_thread;
+
+	switch (type) {
+		case PROCESS_DUMP_TRUNC:
+			pkt_handler = dump_packet_and_trunc;
+			break;
+		case PROCESS_DUMP:
+			pkt_handler = dump_packet;
+			break;
+		case PROCESS_PRINT:
+			pkt_handler = print_packet;
+			break;
+		default:
+			pkt_handler = print_packet;
+			break;
+	}
+
+	pthread_attr_init(&attr);
+	pthread_create(&pkt_thread, &attr, packet_process_thread, NULL);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -733,6 +796,7 @@ main(int argc, char **argv)
 	bpf_u_int32 localnet, netmask;
 	register char *cp, *infile, *cmdbuf, *device, *RFileName, *VFileName, *WFileName;
 	pcap_handler callback;
+	int pkt_process_type;
 	int type;
 	int dlt;
 	int new_dlt;
@@ -1522,13 +1586,15 @@ main(int argc, char **argv)
 		if (p == NULL)
 			error("%s", pcap_geterr(pd));
 		if (Cflag != 0 || Gflag != 0) {
-			callback = dump_packet_and_trunc;
+			pkt_process_type = PROCESS_DUMP_TRUNC; /* Dump and trunc */
+			//callback = dump_packet_and_trunc;
 			dumpinfo.WFileName = WFileName;
 			dumpinfo.pd = pd;
 			dumpinfo.p = p;
 			pcap_userdata = (u_char *)&dumpinfo;
 		} else {
-			callback = dump_packet;
+			pkt_process_type = PROCESS_DUMP; /* Just dump */
+			//callback = dump_packet;
 			pcap_userdata = (u_char *)p;
 		}
 #ifdef HAVE_PCAP_DUMP_FLUSH
@@ -1538,9 +1604,11 @@ main(int argc, char **argv)
 	} else {
 		type = pcap_datalink(pd);
 		printinfo = get_print_info(type);
-		callback = print_packet;
+		pkt_process_type = PROCESS_PRINT; /* Print the packets */
+		//callback = print_packet;
 		pcap_userdata = (u_char *)&printinfo;
 	}
+	callback = enqueue_pkt;
 
 #ifdef SIGNAL_REQ_INFO
 	/*
@@ -1593,8 +1661,11 @@ main(int argc, char **argv)
 		(void)fflush(stderr);
 	}
 #endif /* WIN32 */
+
+	init_queue(&queue);
 	do {
-		status = pcap_loop(pd, cnt, callback, pcap_userdata);
+		packet_process_thread_start(pkt_process_type, &status);
+		status = pcap_loop(pd, cnt, enqueue_pkt, pcap_userdata);
 		if (WFileName == NULL) {
 			/*
 			 * We're printing packets.  Flush the printed output,
