@@ -1665,7 +1665,7 @@ main(int argc, char **argv)
 	init_queue(&queue);
 	do {
 		packet_process_thread_start(pkt_process_type, &status);
-		status = pcap_loop(pd, cnt, enqueue_pkt, pcap_userdata);
+		status = pcap_loop_mt(pd, cnt, enqueue_pkt, pcap_userdata);
 		if (WFileName == NULL) {
 			/*
 			 * We're printing packets.  Flush the printed output,
@@ -1757,7 +1757,7 @@ cleanup(int signo _U_)
 	 * to do anything with standard I/O streams in a signal handler -
 	 * the ANSI C standard doesn't say it is).
 	 */
-	pcap_breakloop(pd);
+	pcap_breakloop_mt(pd);
 #else
 	/*
 	 * We don't have "pcap_breakloop()"; this isn't safe, but
